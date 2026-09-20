@@ -12,42 +12,33 @@ jobs:
       - name: Configure Core RDP Settings
         run: |
           # Enable Remote Desktop and disable Network Level Authentication (if needed)
-          Set-ItemProperty -Path 'HKLM:SystemCurrentControlSetControlTerminal Server' `
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
                              -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:SystemCurrentControlSetControlTerminal ServerWinStationsRDP-Tcp' `
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
                              -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:SystemCurrentControlSetControlTerminal ServerWinStationsRDP-Tcp' `
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
                              -Name "SecurityLayer" -Value 0 -Force
 
           # Remove any existing rule with the same name to avoid duplication
-          netsh advfirewall firewall delete rule name="RDP-Tailscale" | Out-Null
+          netsh advfirewall firewall delete rule name="RDP-Tailscale"
           
-          # Allow incoming connections on port 3389
+          # For testing, allow any incoming connection on port 3389
           netsh advfirewall firewall add rule name="RDP-Tailscale" `
-            dir=in action=allow protocol=TCP localport=3389 | Out-Null
+            dir=in action=allow protocol=TCP localport=3389
 
-          # Restart the Remote Desktop service to ensure changes take effect
+          # (Optional) Restart the Remote Desktop service to ensure changes take effect
           Restart-Service -Name TermService -Force
 
-      - name: Create RDP User with Fixed Password
+      - name: Create RDP User with Secure Password
         run: |
-          # ===== EDIT THIS: your fixed RDP password =====
-          $password = "MyFixedRDP#Pass123"
-          # ==============================================
-
+          $password = "Md2@Secure"
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-
-          # Remove existing user if present (optional but clean)
-          if (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue) {
-              Remove-LocalUser -Name "RDP" -Force
-          }
-
           New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
-
+          
           echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
-
+          
           if (-not (Get-LocalUser -Name "RDP")) {
               Write-Error "User creation failed"
               exit 1
@@ -64,18 +55,14 @@ jobs:
 
       - name: Establish Tailscale Connection
         run: |
-          # ===== EDIT THIS: your Tailscale auth key =====
-          $authKey = "tskey-auth-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-          # ==============================================
-
           # Bring up Tailscale with the provided auth key and set a unique hostname
-          & "$env:ProgramFilesTailscale\tailscale.exe" up --authkey=$authKey --hostname=gh-runner-$env:GITHUB_RUN_ID
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
           
           # Wait for Tailscale to assign an IP
           $tsIP = $null
           $retries = 0
           while (-not $tsIP -and $retries -lt 10) {
-              $tsIP = & "$env:ProgramFilesTailscale\tailscale.exe" ip -4
+              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
               Start-Sleep -Seconds 5
               $retries++
           }
@@ -86,41 +73,6 @@ jobs:
           }
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
       
-      - name: Install Visual Studio Code
-        run: |
-          # Download VS Code user installer (stable, 64-bit)
-          $vscodeUrl = "https://update.code.visualstudio.com/latest/win32-x64-user/stable"
-          $vscodeInstaller = "$env:TEMPVSCodeSetup.exe"
-
-          Invoke-WebRequest -Uri $vscodeUrl -OutFile $vscodeInstaller
-
-          # Silent install:
-          # /verysilent – no UI
-          # /norestart – don’t restart
-          # /mergetasks=!runcode – don’t launch VS Code after install
-          Start-Process -FilePath $vscodeInstaller `
-            -ArgumentList "/verysilent", "/norestart", "/mergetasks=!runcode" `
-            -Wait
-
-          $vscodePath = "$env:LOCALAPPDATAProgramsMicrosoft VS CodeCode.exe"
-
-          if (-not (Test-Path $vscodePath)) {
-              Write-Error "Visual Studio Code installation failed"
-              exit 1
-          }
-
-          Write-Host "Visual Studio Code installed at: $vscodePath"
-
-          # Optional: install some common extensions
-          $codeCli = "$env:LOCALAPPDATAProgramsMicrosoft VS Code\bincode.cmd"
-          if (Test-Path $codeCli) {
-            & $codeCli --install-extension ms-vscode-remote.remote-explorer | Out-Null
-            & $codeCli --install-extension ms-vscode-remote.remote-wsl | Out-Null
-          }
-
-          # Cleanup installer
-          Remove-Item $vscodeInstaller -Force
-
       - name: Verify RDP Accessibility
         run: |
           Write-Host "Tailscale IP: $env:TAILSCALE_IP"
@@ -136,13 +88,12 @@ jobs:
       - name: Maintain Connection
         run: |
           Write-Host "`n=== RDP ACCESS ==="
-          Write-Host "Address:  $env:TAILSCALE_IP"
+          Write-Host "Address: $env:TAILSCALE_IP"
           Write-Host "Username: RDP"
           Write-Host "Password: $(echo $env:RDP_CREDS)"
-          Write-Host "VS Code:  $env:LOCALAPPDATAProgramsMicrosoft VS CodeCode.exe"
           Write-Host "==================`n"
           
-          # Keep runner active indefinitely (or until manually cancelled / timeout)
+          # Keep runner active indefinitely (or until manually cancelled)
           while ($true) {
               Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
               Start-Sleep -Seconds 300
